@@ -119,6 +119,7 @@ dev = ["ruff==0.16.3"]
 fibsem_ui = "fibsem.ui.FibsemUI:main"
 fibsem_label = "fibsem.ui.FibsemLabellingUI:main"
 fibsem-autolamella-ui = "fibsem.applications.autolamella.ui.AutoLamellaMainUI:run_ui"
+fibsem-solist-ui = "fibsem.applications.solist.ui.SolistMainUI:run_ui"
 fm-image-viewer-ui = "fibsem.ui.fm.widgets.fm_image_viewer_widget:main"
 fibsem-correlation-ui = "fibsem.ui.correlation.widgets.correlation_tab_widget:main"
 fibsem-cli = "fibsem.cli:main"
