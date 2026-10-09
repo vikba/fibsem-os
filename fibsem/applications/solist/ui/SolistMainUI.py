@@ -9,20 +9,21 @@ from PyQt5.QtWidgets import (
 )
 
 
-class SolistMainUI(QMainWindow):
+from fibsem.ui.FibsemUI import FibsemUI
+from fibsem.applications.solist.ui.workflow_widget import (
+    SolistWorkflowWidget,
+)
+
+
+class SolistUI(FibsemUI):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("SOLIST")
-        self.resize(1000, 700)
-
-        central_widget = QWidget()
-        layout = QVBoxLayout(central_widget)
-
-        layout.addWidget(QLabel("SOLIST Workflow"))
-        layout.addWidget(QLabel("Placeholder application"))
-
-        self.setCentralWidget(central_widget)
+        self.solist_workflow = SolistWorkflowWidget(self)
+        self.tab_widget.addTab(
+            self.solist_workflow,
+            "SOLIST workflow",
+        )
 
 
 def run_ui():
@@ -31,7 +32,7 @@ def run_ui():
     if app is None:
         app = QApplication(sys.argv)
 
-    window = SolistMainUI()
+    window = SolistUI()
     window.show()
 
     return app.exec_()
