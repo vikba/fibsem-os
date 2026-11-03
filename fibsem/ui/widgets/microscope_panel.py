@@ -267,11 +267,15 @@ class MicroscopeControls(QWidget):
                 self.tabWidget.addTab(self.fm_control_widget, "Fluorescence")
 
             # add the detection widget if ml dependencies are available
+            anchor = (
+                self.manipulator_widget or self.fm_control_widget or self.milling_tab
+            )
+
             if DETECTION_AVAILABLE:
                 self.det_widget = FibsemEmbeddedDetectionWidget(
                     parent=self, view_controller=self._view_controller
                 )
-                index = self.tabWidget.indexOf(self.sample_widget)
+                index = self.tabWidget.indexOf(anchor)
                 self.tabWidget.setTabVisible(
                     self.tabWidget.insertTab(index, self.det_widget, "Detection"), False
                 )
@@ -283,7 +287,7 @@ class MicroscopeControls(QWidget):
                 view_controller=self._view_controller,
                 parent=self,
             )
-            index = self.tabWidget.indexOf(self.sample_widget)
+            index = self.tabWidget.indexOf(anchor)
             self.tabWidget.setTabVisible(
                 self.tabWidget.insertTab(index, self.spot_burn_widget, "Spot Burn"),
                 False,
