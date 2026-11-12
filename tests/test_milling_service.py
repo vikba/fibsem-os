@@ -9,7 +9,13 @@ import pytest
 
 from fibsem import utils
 from fibsem.devices.core import Device
-from fibsem.drivers.demo.services import DemoMilling
+from fibsem.drivers.demo.services import (
+    _PATTERN_SETUP_TIME,
+    SIM_MILL_SCALE,
+    DemoMilling,
+    _mill_seconds,
+)
+from fibsem.milling.base import estimate_volume_time
 from fibsem.services import Service
 from fibsem.services.milling import DRAW_HOOKS, Milling, UnsupportedPattern
 from fibsem.structures.settings import (
@@ -84,8 +90,9 @@ def test_prepare_applies_the_recipe_and_draws(microscope):
     assert microscope._connection.milling_system.patterning_mode == "Parallel"
     assert len(microscope._connection.milling_system.patterns) == 3
     assert prepared["milling_current"] == 7.6e-9
-    assert milling.estimate_time() == {"seconds": 15, **prepared}
-    assert microscope.estimate_milling_time() == 15
+    seconds = _mill_seconds(_patterns(), 7.6e-9)
+    assert milling.estimate_time() == {"seconds": seconds, **prepared}
+    assert microscope.estimate_milling_time() == seconds
 
 
 def test_a_current_the_beam_does_not_list_is_warned_of(microscope):
@@ -296,27 +303,88 @@ def test_the_estimate_takes_stages_before_anything_is_drawn(microscope):
 
     stage = FibsemMillingStage(name="Rough")
     answer = microscope.milling.estimate_time(stages=[stage])
-    seconds = Milling.estimate_stage(stage)
+    seconds = DemoMilling.estimate_stage(stage)
     assert answer == {
         "seconds": seconds,
         "stages": [{"name": "Rough", "seconds": seconds}],
     }
 
 
-def test_the_demo_can_mill_in_proportion_to_the_estimate(microscope, monkeypatch):
-    """Off by default (a few seconds a pattern); with the scale set, a fraction
-    of the sputter-rate estimate, so a stop can be tried mid-mill."""
-    from fibsem.drivers.demo.services import SIM_MILL_SCALE
-    from fibsem.milling.base import estimate_volume_time
+def _seconds(microscope, patterns, **recipe) -> float:
+    microscope.milling.prepare(_recipe(**recipe), patterns)
+    return microscope.milling.estimate_time()["seconds"]
 
-    milling = microscope.milling
-    milling.prepare(_recipe(), [_rectangle()])
-    assert milling.estimate_time()["seconds"] == 5
+
+def test_the_demo_mills_in_proportion_to_the_estimate(microscope, monkeypatch):
+    """A fraction of the sputter-rate estimate (a tenth unless the scale is set),
+    and a moment to set each pattern up."""
+    estimate = estimate_volume_time(_rectangle().volume, 7.6e-9)
+    one = _seconds(microscope, [_rectangle()])
+    assert one == pytest.approx(0.1 * estimate + _PATTERN_SETUP_TIME)
     monkeypatch.setenv(SIM_MILL_SCALE, "0.5")
-    current = microscope.get_beam_current(microscope.milling_channel)
-    assert milling.estimate_time()["seconds"] == pytest.approx(
-        0.5 * estimate_volume_time(_rectangle().volume, current)
+    assert _seconds(microscope, [_rectangle()]) == pytest.approx(
+        0.5 * estimate + _PATTERN_SETUP_TIME
     )
+
+
+def test_the_demo_mills_longer_for_more_volume_and_less_current(microscope):
+    """Twice the area or the depth is twice the milling; twice the current, half.
+    The time a pattern sets is the time it takes."""
+    from dataclasses import replace
+
+    def milled(pattern, **recipe):
+        return _seconds(microscope, [pattern], **recipe) - _PATTERN_SETUP_TIME
+
+    one = milled(_rectangle())
+    assert milled(replace(_rectangle(), width=20e-6)) == pytest.approx(2 * one)
+    assert milled(replace(_rectangle(), depth=2e-6)) == pytest.approx(2 * one)
+    assert milled(_rectangle(), milling_current=15.2e-9) == pytest.approx(one / 2)
+    assert milled(replace(_rectangle(), time=30.0)) == pytest.approx(0.1 * 30.0)
+
+
+def test_many_small_patterns_cost_only_their_setup_more(microscope):
+    """Ten rectangles of a tenth the width: the same volume, nine more setups."""
+    from dataclasses import replace
+
+    small = [replace(_rectangle(), width=1e-6, centre_x=i * 2e-6) for i in range(10)]
+    assert _seconds(microscope, small) == pytest.approx(
+        _seconds(microscope, [_rectangle()]) + 9 * _PATTERN_SETUP_TIME
+    )
+
+
+@pytest.mark.parametrize(
+    "end_x,end_y,length",
+    [(1e-6, 0, 1e-6), (0, 1e-6, 1e-6), (3e-6, 4e-6, 5e-6), (0, 0, 0)],
+)
+def test_demo_line_timing_uses_the_simulated_cut_width(
+    microscope, monkeypatch, end_x, end_y, length
+):
+    from fibsem.milling import FibsemMillingStage
+    from fibsem.milling.patterning.patterns import LinePattern
+
+    monkeypatch.setenv(SIM_MILL_SCALE, "0.1")
+    stage = FibsemMillingStage(
+        name="Line",
+        milling=_recipe(),
+        pattern=LinePattern(start_x=0, start_y=0, end_x=end_x, end_y=end_y, depth=1e-6),
+    )
+    # The simulated cut is 0.5 micrometres wide; length times depth is an area.
+    volume = length * 0.5e-6 * 1e-6
+    seconds = 0.1 * estimate_volume_time(volume, 7.6e-9) + _PATTERN_SETUP_TIME
+    assert _seconds(microscope, stage.pattern.define()) == pytest.approx(seconds)
+    planned = microscope.milling.estimate_time(stages=[stage])
+    assert planned["seconds"] == pytest.approx(seconds)
+    assert planned["stages"][0]["seconds"] == pytest.approx(seconds)
+
+    ticks = []
+    microscope.milling.progress.changed.connect(
+        lambda p: ticks.append(p) if not p.status.is_terminal else None
+    )
+    microscope.milling.run()
+    timed = [tick for tick in ticks if tick.estimated_time is not None]
+    assert timed
+    assert all(tick.estimated_time == pytest.approx(seconds) for tick in timed)
+    assert microscope.milling.state.get_value() is MillingState.IDLE
 
 
 def test_the_settings_it_lists_are_the_ones_it_mills_with(microscope):

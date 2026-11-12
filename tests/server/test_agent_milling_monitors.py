@@ -69,7 +69,7 @@ def milling_for_a_while(arctis, monkeypatch):  # noqa: F811
     """The Demo mills for a minute, looked at every 0.1 s, under a dropping FM."""
     import fibsem.drivers.demo.services as demo_services
 
-    monkeypatch.setattr(demo_services, "_PATTERN_TIME", 60)
+    monkeypatch.setattr(demo_services, "_pattern_seconds", lambda *_: 60)
     monkeypatch.setattr(demo_services, "sim_sleep", time.sleep)
     arctis.milling.poll_interval = 0.1
     monkeypatch.setattr(arctis, "fm", DroppingFM())

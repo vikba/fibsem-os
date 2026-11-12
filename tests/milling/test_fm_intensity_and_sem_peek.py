@@ -225,7 +225,7 @@ def milling_in_real_time(monkeypatch):
 
     import fibsem.drivers.demo.services as demo_services
 
-    monkeypatch.setattr(demo_services, "_PATTERN_TIME", 1)
+    monkeypatch.setattr(demo_services, "_pattern_seconds", lambda *_: 1)
     monkeypatch.setattr(demo_services, "sim_sleep", time.sleep)
 
     def setup(**kwargs):
@@ -276,7 +276,7 @@ def test_fm_intensity_reads_the_sim_arctis_fm(
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     # A long mill, ended once the monitor has read the FM: under load the
     # first frame can take seconds.
-    monkeypatch.setattr(demo_services, "_PATTERN_TIME", 60)
+    monkeypatch.setattr(demo_services, "_pattern_seconds", lambda *_: 60)
     arctis = milling_in_real_time(config_path=str(config_path))
     assert arctis.fm is not None
     stage = _stage(_fm(warmup_duration=0.5))

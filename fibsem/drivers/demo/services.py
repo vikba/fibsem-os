@@ -7,9 +7,9 @@ change only through the microscope's beam methods, so through the beam devices.
 Nothing on the Demo ends a mill but the clock, so a ``run`` is timed by the estimate
 it starts with, on simulated time: each wait is ``sim_sleep``, which the test suite
 turns off, and the time counts as it would have passed. A ``start`` alone runs until
-something stops it. Each pattern takes a few seconds, or, with
-``FIBSEM_SIM_MILL_SCALE`` set, that fraction of the sputter-rate estimate for what
-is drawn, so a stop can be tried mid-mill.
+something stops it. A mill takes a fraction of the sputter-rate estimate for what is
+drawn (``FIBSEM_SIM_MILL_SCALE``, a tenth unless set), plus a moment to set each
+pattern up: so it grows with the area and the depth, and falls with the current.
 
 `DemoSpotBurn` is the shared point-by-point burn, also on simulated time, and
 `DemoCoating` the shared coating, whose valve stays open for simulated time.
@@ -19,17 +19,22 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import numpy as np
 
 from fibsem._timing import sim_sleep
 from fibsem.devices.core import ParameterMetadata
+from fibsem.drivers.demo.sim_scene import LINE_MILL_WIDTH
 from fibsem.drivers.demo.simulator import (
     SIM_ASYNC_MILLING_EXTRA_TIME,
     SIMULATOR_SCAN_DIRECTIONS,
 )
-from fibsem.milling.base import estimate_volume_time
+from fibsem.milling.base import (
+    FibsemMillingStage,
+    estimate_milling_time,
+    estimate_volume_time,
+)
 from fibsem.milling.progress import MillingProgress
 from fibsem.milling.rtm import RTM_MODES
 from fibsem.services.coating import (
@@ -53,10 +58,11 @@ if TYPE_CHECKING:
     from fibsem.drivers.demo.microscope import DemoMicroscope
     from fibsem.drivers.demo.simulator import DemoSimulator
 
-# simulated seconds each pattern takes
-_PATTERN_TIME = 5
-# set to mill for this fraction of the sputter-rate estimate instead
+# simulated seconds to set each pattern up, whatever its size
+_PATTERN_SETUP_TIME = 0.2
+# the fraction of the sputter-rate estimate a mill takes: the variable, and its default
 SIM_MILL_SCALE = "FIBSEM_SIM_MILL_SCALE"
+_DEFAULT_MILL_SCALE = 0.1
 
 
 class DemoMilling(BeamMilling):
@@ -165,16 +171,16 @@ class DemoMilling(BeamMilling):
         self._set_state(MillingState.RUNNING)
 
     def _estimate(self) -> float:
-        estimate = _PATTERN_TIME * len(self.connection.milling_system.patterns)
-        scale = _mill_scale()
-        if scale:
-            microscope = self.parent
-            current = microscope.get_beam_current(microscope.milling_channel)
-            volume = sum(p.volume for p in self.drawn_patterns)
-            estimate = scale * estimate_volume_time(volume, current)
+        microscope = self.parent
+        current = microscope.get_beam_current(microscope.milling_channel)
+        estimate = _mill_seconds(self.connection.milling_system.patterns, current)
         if self._open_ended and self.read_state() in ACTIVE_MILLING_STATES:
             estimate += SIM_ASYNC_MILLING_EXTRA_TIME
         return estimate
+
+    @classmethod
+    def estimate_stage(cls, stage: FibsemMillingStage) -> float:
+        return _mill_seconds(stage.pattern.define(), stage.milling.milling_current)
 
     def _clear(self) -> None:
         self.connection.milling_system.patterns = []
@@ -246,11 +252,31 @@ def _box(pattern: FibsemPatternSettings) -> Tuple[float, float, float, float]:
     )
 
 
+def _pattern_seconds(pattern: FibsemPatternSettings, current: float) -> float:
+    """Simulated milling and setup seconds for one pattern."""
+    if isinstance(pattern, FibsemLineSettings):
+        # Lines have no width setting; the scene's cut width gives cubic metres.
+        length = np.hypot(
+            pattern.end_x - pattern.start_x, pattern.end_y - pattern.start_y
+        )
+        estimate = estimate_volume_time(
+            length * LINE_MILL_WIDTH * pattern.depth, current
+        )
+    else:
+        estimate = estimate_milling_time(pattern, current)
+    return _mill_scale() * estimate + _PATTERN_SETUP_TIME
+
+
+def _mill_seconds(patterns: Sequence[FibsemPatternSettings], current: float) -> float:
+    return sum(_pattern_seconds(pattern, current) for pattern in patterns)
+
+
 def _mill_scale() -> float:
     try:
-        return max(0.0, float(os.environ.get(SIM_MILL_SCALE) or 0))
+        scale = float(os.environ.get(SIM_MILL_SCALE) or 0)
     except ValueError:
-        return 0.0
+        scale = 0.0
+    return scale if scale > 0 else _DEFAULT_MILL_SCALE
 
 
 def bind_demo_milling(microscope: DemoMicroscope) -> Optional[DemoMilling]:

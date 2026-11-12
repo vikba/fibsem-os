@@ -54,6 +54,7 @@ from fibsem.structures.settings import BeamType, FibsemStagePosition
 # Keep the render well-defined at any pose: below this foreshortening the
 # view is a degenerate grazing projection (features smear to infinity).
 MIN_FORESHORTENING = 0.035  # ~ sin(2 deg)
+LINE_MILL_WIDTH = 0.5e-6  # metres; the width of a simulated line cut
 
 
 @dataclass(frozen=True)
@@ -1415,7 +1416,9 @@ class SampleScene:
             depth = float(getattr(p, "depth", 1e-6) or 1e-6)
             drawn = len(planned)
             if hasattr(p, "start_x"):  # a line: a thin rectangle along it
-                half = float(getattr(p, "width", 0.5e-6) or 0.5e-6) / 2
+                half = (
+                    float(getattr(p, "width", LINE_MILL_WIDTH) or LINE_MILL_WIDTH) / 2
+                )
                 dx_, dy_ = p.end_x - p.start_x, p.end_y - p.start_y
                 length = np.hypot(dx_, dy_) or 1e-12
                 nx, ny = -dy_ / length * half, dx_ / length * half
