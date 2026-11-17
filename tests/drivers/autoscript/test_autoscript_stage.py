@@ -174,3 +174,13 @@ def test_new_api_refuses_an_out_of_limit_move_before_any_sdk_call(recording, kin
     assert facts["refused"] is not None and "x=1" in facts["refused"]
     assert not any(call[1].endswith("_move") for call in facts["calls_after_refusal"])
     assert facts["moved"][0] == pytest.approx(5e-5)
+
+
+@pytest.mark.parametrize("kind", ["stage", "compustage"])
+def test_a_stop_reaches_the_sdk_and_the_stopped_move_raises(recording, kind):
+    facts = recording["facts"][kind]
+    assert facts["stop_available"] is True
+    assert facts["stopped"]["raised"] == ["OperationCancelledError"]
+    stops = [c for c in facts["stopped"]["calls"] if c[1].endswith(".stop")]
+    assert len(stops) == 1
+    assert facts["moved_after_stop"][0] == pytest.approx(7e-5)

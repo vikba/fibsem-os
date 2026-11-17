@@ -632,6 +632,8 @@ class TescanStage(Stage):
       is None it is taken from where the stage is. When both are, y′ and z′ are left
       where they are too: a pose change alone is a pure tilt and rotation on the
       instrument, as it was before the conversion.
+    - ``_stop``: ``Stage.Stop`` on a second connection, since the move holds the lock
+      on the first; an error ``MoveTo`` then raises is the stop, not a failure.
     - ``_move_relative``: reads where the stage is and moves to that plus the offset
       (SharkSEM moves are absolute); x, y or z the offset leaves None is left None, so a
       tilt alone is a pure tilt here too.
@@ -715,8 +717,24 @@ class TescanStage(Stage):
         logging.info(f"Moving stage to {position}.")
         x, y, z, r, t = sdk.to_tescan_stage_position(position=self._native(position))
         with self._lock:
-            self.connection.sdk.Stage.MoveTo(x=x, y=y, z=z, rot=r, tiltx=t)
+            try:
+                self.connection.sdk.Stage.MoveTo(x=x, y=y, z=z, rot=r, tiltx=t)
+            except Exception:
+                if not self._stop_requested.is_set():
+                    raise
+                logging.info("The stage move ended on a stop.", exc_info=True)
         logging.debug({"msg": "move_stage_absolute", "position": position.to_dict()})
+
+    def _stop(self) -> None:
+        # From another thread, while MoveTo holds the lock: on a second connection.
+        logging.info("Stopping stage.")
+        thread_connection = sdk.Automation(
+            self.connection.ip_address, port=self.connection.port
+        )
+        try:
+            thread_connection.Stage.Stop()
+        finally:
+            del thread_connection
 
     def _move_relative(self, delta: FibsemStagePosition) -> None:
         logging.info(f"Moving stage by {delta}.")

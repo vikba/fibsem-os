@@ -125,6 +125,8 @@ class AutoscriptStage(Stage):
     ``_move_absolute`` restores the working distance and keeps to the axis
     restrictions. ``Stage.move_absolute`` and ``move_relative`` read the position
     back after the move. Limits and positions share one unit: radians for r and t.
+    ``_stop`` is the SDK's ``stop``, called from another thread while the move's
+    call is still out; an error that call then raises is the stop, not a failure.
     """
 
     compustage = False
@@ -197,9 +199,12 @@ class AutoscriptStage(Stage):
         )
 
         logging.info(f"Moving stage to {position}.")
-        self._stage.absolute_move(
-            autoscript_position, MoveSettings(rotate_compucentric=True)
-        )
+        try:
+            self._stage.absolute_move(
+                autoscript_position, MoveSettings(rotate_compucentric=True)
+            )
+        except Exception:
+            self._raise_unless_stopped()
 
         # restore working distance to adjust for microscope compensation
         if not self.compustage:
@@ -209,8 +214,21 @@ class AutoscriptStage(Stage):
 
     def _move_relative(self, delta: FibsemStagePosition) -> None:
         logging.info(f"Moving stage by {delta}.")
-        self._stage.relative_move(self._to_autoscript(delta))
+        try:
+            self._stage.relative_move(self._to_autoscript(delta))
+        except Exception:
+            self._raise_unless_stopped()
         logging.debug({"msg": "move_stage_relative", "position": delta.to_dict()})
+
+    def _stop(self) -> None:
+        logging.info("Stopping stage.")
+        self._stage.stop()
+
+    def _raise_unless_stopped(self) -> None:
+        """Inside a move's ``except``: re-raise, unless a stop was asked for."""
+        if not self._stop_requested.is_set():
+            raise
+        logging.info("The stage move ended on a stop.", exc_info=True)
 
     def _home(self) -> None:
         logging.info("Homing stage...")

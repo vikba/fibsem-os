@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import types
 
 logging.disable(logging.CRITICAL)
@@ -162,6 +163,8 @@ class FakeStage(Node):
         super().__init__(path)
         object.__setattr__(self, "_position", position)
         object.__setattr__(self, "_limits", limits)
+        # (started, stopped) while a test holds a move until `stop`; else None
+        object.__setattr__(self, "_held", None)
 
     def _log(self, kind, name, *args):
         LOG.append([kind, f"{self._path}.{name}", _plain(list(args)), {}])
@@ -189,8 +192,18 @@ class FakeStage(Node):
         low, high = self._limits[axis]
         return STRUCTS.Limits(min=low, max=high)
 
+    def stop(self):
+        self._log("call", "stop")
+        if self._held is not None:
+            self._held[1].set()
+
     def absolute_move(self, position, *args):
         self._log("call", "absolute_move", position, *args)
+        if self._held is not None:
+            started, stopped = self._held
+            started.set()
+            assert stopped.wait(10), "the move was never stopped"
+            return
         for name in position._fields:
             value = getattr(position, name, None)
             if name != "coordinate_system" and value is not None:
@@ -511,6 +524,31 @@ def cases():
     return out
 
 
+def stopped_mid_move(stage):
+    """What a move raised when it was stopped while ``absolute_move`` was out, and the
+    SDK calls made from the stop on."""
+    vendor = stage._stage
+    held = (threading.Event(), threading.Event())
+    object.__setattr__(vendor, "_held", held)
+    raised = []
+
+    def run():
+        try:
+            stage.move_absolute(FibsemStagePosition(x=6e-5))
+        except BaseException as e:  # noqa: BLE001 - recorded
+            raised.append(type(e).__name__)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert held[0].wait(10), "the move never started"
+    LOG.clear()
+    stage.stop()
+    thread.join(10)
+    assert not thread.is_alive(), "the stopped move never returned"
+    object.__setattr__(vendor, "_held", None)
+    return {"raised": raised, "calls": copy.deepcopy(LOG)}
+
+
 def facts():
     """What the new API makes of each stage, beside the parity cases."""
     from fibsem.devices import StageLimitError
@@ -534,6 +572,11 @@ def facts():
             "refused": refused,
             "calls_after_refusal": copy.deepcopy(LOG),
             "moved": _value(stage.move_absolute(FibsemStagePosition(x=5e-5))),
+            "stop_available": stage.commands["stop"].available,
+            "stopped": stopped_mid_move(stage),
+            "moved_after_stop": _value(
+                stage.move_absolute(FibsemStagePosition(x=7e-5))
+            ),
         }
     return out
 

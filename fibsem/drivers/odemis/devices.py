@@ -432,12 +432,26 @@ class OdemisStage(Stage):
     def _move_absolute(self, position: FibsemStagePosition) -> None:
         from fibsem.drivers.odemis.microscope import stage_position_to_odemis_dict
 
-        self._stage.moveAbs(stage_position_to_odemis_dict(position)).result()
+        self._wait(self._stage.moveAbs(stage_position_to_odemis_dict(position)))
 
     def _move_relative(self, delta: FibsemStagePosition) -> None:
         from fibsem.drivers.odemis.microscope import stage_position_to_odemis_dict
 
-        self._stage.moveRel(stage_position_to_odemis_dict(delta)).result()
+        self._wait(self._stage.moveRel(stage_position_to_odemis_dict(delta)))
+
+    def _wait(self, move: Any) -> None:
+        """Wait for a move's future. A stop cancels it, which its ``result`` raises:
+        that is the stop, not a failure."""
+        try:
+            move.result()
+        except Exception:
+            if not self._stop_requested.is_set():
+                raise
+            logging.info("The stage move ended on a stop.", exc_info=True)
+
+    def _stop(self) -> None:
+        logging.info("Stopping stage.")
+        self._stage.stop()
 
     def _home(self) -> None:
         logging.info("Homing stage...")

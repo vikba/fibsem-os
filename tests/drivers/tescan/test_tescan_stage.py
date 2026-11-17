@@ -8,13 +8,16 @@ device handles a move that leaves axes out. Nothing here has run on an instrumen
 """
 
 import os
+import threading
 
 import numpy as np
 import pytest
 
 import fibsem.config as cfg
 from fibsem import utils
+from fibsem.cancellation import OperationCancelledError
 from fibsem.devices.stage import UNLIMITED
+from fibsem.drivers.tescan import sdk
 from fibsem.drivers.tescan.devices import (
     TILT_AXIS_Z,
     TescanStage,
@@ -164,3 +167,70 @@ def test_a_disabled_stage_gets_no_device(monkeypatch):
     assert microscope.stage is None
     with pytest.raises(NotImplementedError, match="get_stage_position"):
         microscope.get_stage_position()
+
+
+def _stopped_mid_move(monkeypatch, microscope, fake):
+    """What a move raised when it was stopped while ``Stage.MoveTo`` was out, and how
+    many connections the stop opened. The fake's MoveTo waits for its Stop."""
+    started, stopped = threading.Event(), threading.Event()
+    opened, raised = [], []
+
+    def move_to(**kwargs):
+        fake.record("Stage.MoveTo", (), kwargs)
+        started.set()
+        assert stopped.wait(10), "the move was never stopped"
+
+    def stop():
+        fake.record("Stage.Stop", (), {})
+        stopped.set()
+
+    fake.Stage.MoveTo, fake.Stage.Stop = move_to, stop
+    monkeypatch.setattr(
+        sdk, "Automation", lambda *args, **kwargs: opened.append(args) or fake
+    )
+
+    def run():
+        try:
+            microscope.stage.move_absolute(P(x=2e-3))
+        except BaseException as error:  # noqa: BLE001 - the test reads it
+            raised.append(error)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert started.wait(10), "the move never started"
+    microscope.stage.stop()
+    thread.join(10)
+    assert not thread.is_alive(), "the stopped move never returned"
+    return (raised[0] if raised else None), opened
+
+
+def test_stop_is_available_on_the_tescan_stage(monkeypatch):
+    microscope, _ = _connected(monkeypatch)
+    assert microscope.stage.commands["stop"].available
+
+
+def test_a_stop_reaches_the_stage_on_a_second_connection(monkeypatch):
+    microscope, fake = _connected(monkeypatch)
+    error, opened = _stopped_mid_move(monkeypatch, microscope, fake)
+    assert isinstance(error, OperationCancelledError)
+    assert len(opened) == 1  # MoveTo holds the first connection's lock
+    assert len(fake.calls("Stage.Stop")) == 1
+
+
+def test_a_move_after_a_stopped_one_arrives(monkeypatch):
+    microscope, fake = _connected(monkeypatch)
+    _stopped_mid_move(monkeypatch, microscope, fake)
+    del fake.Stage.MoveTo
+    moved = microscope.stage.move_absolute(P(x=2e-3))
+    assert moved.x == pytest.approx(2e-3)
+
+
+def test_a_move_that_fails_without_a_stop_still_raises(monkeypatch):
+    microscope, fake = _connected(monkeypatch)
+
+    def move_to(**kwargs):
+        raise RuntimeError("stage error")
+
+    fake.Stage.MoveTo = move_to
+    with pytest.raises(RuntimeError, match="stage error"):
+        microscope.stage.move_absolute(P(x=2e-3))

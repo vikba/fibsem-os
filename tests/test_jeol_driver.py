@@ -404,6 +404,11 @@ def test_stage_moves_in_millimetres_and_degrees(connected):
     assert microscope.get_stage_position().x == pytest.approx(1e-3)
 
 
+def test_the_jeol_stage_offers_no_stop(connected):
+    microscope, _ = connected
+    assert not microscope.stage.commands["stop"].available
+
+
 def test_stage_moves_relative(connected):
     microscope, fake = connected
     microscope.move_stage_relative(FibsemStagePosition(x=1e-3, y=0, z=0, r=0, t=0))

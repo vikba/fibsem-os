@@ -15,12 +15,14 @@ import json
 import logging
 import os
 import sys
+import threading
 
 import numpy as np
 import pytest
 
 import fibsem.config as cfg
 from fibsem import utils
+from fibsem.cancellation import OperationCancelledError
 from fibsem.microscope import _chamber_state_name
 from fibsem.structures.image import FibsemImage
 from fibsem.structures.settings import (
@@ -771,3 +773,59 @@ def test_a_role_the_configuration_binds_is_filled(odemis_cls):
     scanner = microscope.devices["scan_generator"]
     assert microscope.beams[BeamType.ELECTRON].scanner is scanner
     assert "scanner" not in microscope.beams[BeamType.ION].roles
+
+
+class _CancelledMove(Exception):
+    """What a cancelled odemis future's ``result`` raises."""
+
+
+def _stopped_mid_move(microscope):
+    """What a move raised when it was stopped while its future was out. The fake
+    stage's future waits for ``stop``, then raises as a cancelled one does."""
+    started, stopped = threading.Event(), threading.Event()
+    raised = []
+
+    class Waiting:
+        def result(self):
+            started.set()
+            assert stopped.wait(10), "the move was never stopped"
+            raise _CancelledMove()
+
+    vendor = microscope.stage._stage
+    vendor.moveAbs = lambda pdict: Waiting()
+    vendor.stop = lambda: (LOG.append(["stop"]), stopped.set())
+
+    def run():
+        try:
+            microscope.stage.move_absolute(FibsemStagePosition(x=2e-3))
+        except BaseException as error:  # noqa: BLE001 - the test reads it
+            raised.append(error)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert started.wait(10), "the move never started"
+    LOG.clear()
+    microscope.stage.stop()
+    thread.join(10)
+    assert not thread.is_alive(), "the stopped move never returned"
+    return raised[0] if raised else None
+
+
+def test_a_stop_cancels_the_move_on_the_odemis_stage(odemis_cls):
+    microscope = make(odemis_cls)
+    assert microscope.stage.commands["stop"].available
+    error = _stopped_mid_move(microscope)
+    assert isinstance(error, OperationCancelledError)
+    assert ["stop"] in LOG
+
+
+def test_an_odemis_move_that_fails_without_a_stop_still_raises(odemis_cls):
+    microscope = make(odemis_cls)
+
+    class Failed:
+        def result(self):
+            raise RuntimeError("stage error")
+
+    microscope.stage._stage.moveAbs = lambda pdict: Failed()
+    with pytest.raises(RuntimeError, match="stage error"):
+        microscope.stage.move_absolute(FibsemStagePosition(x=2e-3))
