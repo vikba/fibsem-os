@@ -169,11 +169,11 @@ class MainMenuBar(QObject):
         edit_menu.addAction(self.action_preferences)
 
         # View menu
-        # Quad-view display controls. The F5/Esc shortcuts live on these QActions — one
+        # Quad-view display controls. The F5 shortcut lives on this QAction — one
         # source of truth for the menu item and its keybinding (Qt renders the shortcut
-        # text in the menu automatically). They are scoped to the Microscope tab via
-        # setShortcutContext + container.addAction (see _create_main_tab), so they only
-        # fire when focus is inside that tab.
+        # text in the menu automatically). It is scoped to the Microscope tab via
+        # setShortcutContext + container.addAction (see _create_main_tab), so it only
+        # fires when focus is inside that tab.
         view_menu.addSeparator()
         self.action_toggle_fullscreen = QAction("Full Screen", self._host)
         self.action_toggle_fullscreen.setCheckable(True)
@@ -183,14 +183,6 @@ class MainMenuBar(QObject):
         )
         self.action_toggle_fullscreen.triggered.connect(self._hotkey_toggle_fullscreen)
         view_menu.addAction(self.action_toggle_fullscreen)
-
-        self.action_exit_fullscreen = QAction("Exit Full Screen", self._host)
-        self.action_exit_fullscreen.setShortcut(QKeySequence(Qt.Key.Key_Escape))
-        self.action_exit_fullscreen.setShortcutContext(
-            Qt.ShortcutContext.WidgetWithChildrenShortcut
-        )
-        self.action_exit_fullscreen.triggered.connect(self._hotkey_exit_fullscreen)
-        view_menu.addAction(self.action_exit_fullscreen)
 
         fullscreen_menu = view_menu.addMenu("Full Screen View")
         for label, key in (
@@ -248,6 +240,15 @@ class MainMenuBar(QObject):
             action.triggered.connect(handler)
             imaging_menu.addAction(action)
             self.imaging_actions.append(action)
+
+        # Esc stops the stage from any tab of the window, so it is not one of the
+        # actions scoped to the Microscope tab.
+        imaging_menu.addSeparator()
+        self.action_stop_stage = QAction("Stop Stage", self._host)
+        self.action_stop_stage.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        self.action_stop_stage.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.action_stop_stage.triggered.connect(self._hotkey_stop_stage)
+        imaging_menu.addAction(self.action_stop_stage)
 
         # add tools menu, reporting submenu
         tools_menu = menu_bar.addMenu("Tools")
@@ -669,20 +670,25 @@ class MainMenuBar(QObject):
 
     def _sync_view_menu(self) -> None:
         """Refresh the View menu's dynamic state right before it opens: reflect whether a
-        view is full-screened (check + Exit-enabled)."""
+        view is full-screened."""
         if self._view_controller() is None:
             return
         fullscreen = self._view_controller().fullscreen is not None
         self.action_toggle_fullscreen.setChecked(fullscreen)
-        self.action_exit_fullscreen.setEnabled(fullscreen)
 
     def _hotkey_toggle_fullscreen(self) -> None:
         """F5: toggle full screen for the selected view."""
         self._view_controller().toggle_fullscreen()
 
-    def _hotkey_exit_fullscreen(self) -> None:
-        """Esc: exit full screen (no-op when already showing the grid)."""
-        self._view_controller().set_fullscreen(None)
+    def _hotkey_stop_stage(self) -> None:
+        """Esc: halt the stage move in progress, whoever started it."""
+        movement_widget = self._panel().movement_widget
+        if movement_widget is None:
+            logging.info(
+                "Esc stop stage: no movement widget (microscope not connected)"
+            )
+            return
+        movement_widget.stop_stage()
 
     def _hotkey_acquire(self) -> None:
         """F2: acquire the selected view (SEM / FIB / FM), if a microscope is connected

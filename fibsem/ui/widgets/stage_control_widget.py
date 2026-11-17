@@ -46,6 +46,8 @@ from superqt import ensure_main_thread
 
 from fibsem import config as cfg
 from fibsem import conversions
+from fibsem.cancellation import OperationCancelledError
+from fibsem.control import MicroscopeBusy
 from fibsem.microscope import FibsemMicroscope
 from fibsem.structures.settings import BeamType, FibsemStagePosition, Point
 from fibsem.structures.system import (
@@ -54,9 +56,10 @@ from fibsem.structures.system import (
     StageSystemSettings,
 )
 from fibsem.ui import notification_service
-from fibsem.ui.control import control_of
+from fibsem.ui.control import control_of, refused
 from fibsem.ui.qt.threading import thread_worker
 from fibsem.ui.stylesheets import (
+    DANGER_BUTTON_STYLESHEET,
     LABEL_INSTRUCTIONS_STYLE,
     PRIMARY_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
@@ -74,6 +77,9 @@ INSTRUCTIONS_TEXT = (
 # to "updating images", "taking new images" and, on the orientation path, nothing at
 # all -- so the same phase looked different depending on how the move was started.
 ACQUIRING_IMAGES = "Acquiring images…"
+
+STAGE_STOPPED = "Stage move stopped."
+STAGE_CANNOT_STOP = "This stage cannot be stopped from here."
 
 FM_NEEDS_CALIBRATION = (
     "Calibrate SEM to FM first: Microscope Configuration, Calibration tab."
@@ -176,9 +182,18 @@ class StageControlWidget(QWidget):
             self.microscope.stage_movement.travels_to_fm()
         )
 
+        # Not one of `_move_buttons`: those go off for the length of a move, which
+        # is when this one is needed. It halts any move, whoever started it.
+        self.pushButton_stop = QPushButton("Stop Stage")
+        self.pushButton_stop.setObjectName("stop_stage")
+        self.pushButton_stop.setToolTip("Halt the stage move in progress (Esc).")
+        self.pushButton_stop.setStyleSheet(DANGER_BUTTON_STYLESHEET)
+        layout.addWidget(self.pushButton_stop, 4, 0, 1, 2)
+        self.pushButton_stop.setVisible(self._can_stop())
+
         self.label_movement_instructions = QLabel()
         self.label_movement_instructions.setWordWrap(True)
-        layout.addWidget(self.label_movement_instructions, 4, 0, 1, 2)
+        layout.addWidget(self.label_movement_instructions, 5, 0, 1, 2)
 
         self._move_buttons = [
             self.pushButton_move,
@@ -198,6 +213,7 @@ class StageControlWidget(QWidget):
             lambda: self.move_to_orientation("SEM")
         )
         self.pushButton_move_to_fm.clicked.connect(self.move_to_fm)
+        self.pushButton_stop.clicked.connect(self.stop_stage)
 
         # register mouse callbacks — one canvas per beam. The canvases are app-lifetime
         # (owned by the controller), so store each (canvas, slot) pair and disconnect it in
@@ -450,6 +466,7 @@ class StageControlWidget(QWidget):
         self._report_move(f"Moving to {stage_position.pretty}…")
         worker = self.absolute_movement_worker(stage_position=stage_position)
         worker.returned.connect(self._on_stage_move_returned)
+        worker.errored.connect(self._on_stage_move_errored)
         worker.finished.connect(self.move_stage_finished)
         worker.start(control=control_of(self.microscope), action="move stage")
 
@@ -471,6 +488,14 @@ class StageControlWidget(QWidget):
         """
         self._report_move(ACQUIRING_IMAGES)
         self.update_ui_after_movement()
+
+    def _on_stage_move_errored(self, error: object) -> None:
+        """The move did not land. A stop is said as a stop; a refusal for want of
+        control is said as one; any other failure is the worker's to log."""
+        if isinstance(error, OperationCancelledError):
+            notification_service.show_toast(STAGE_STOPPED, "info")
+        elif isinstance(error, MicroscopeBusy):
+            refused(error)
 
     def move_stage_finished(self):
         """Handle the completion of a stage movement.
@@ -495,6 +520,34 @@ class StageControlWidget(QWidget):
         if is_acquiring:
             return
         self._toggle_interactions(enable=True)
+
+    # --- stopping ------------------------------------------------------------
+
+    def _can_stop(self) -> bool:
+        stage = self.microscope.stage
+        return stage is not None and stage.can_stop()
+
+    def stop_stage(self) -> None:
+        """Halt whatever stage move is in progress; nothing happens with none.
+
+        The stop goes from a worker: on some stages it is a call over a second
+        connection, which is not the GUI thread's to wait for. It takes no control,
+        since the move it halts is holding it.
+        """
+        if not self._can_stop():
+            notification_service.show_toast(STAGE_CANNOT_STOP, "warning")
+            return
+        worker = self._stop_stage_worker()
+        worker.errored.connect(self._on_stop_errored)
+        worker.start()
+
+    @thread_worker
+    def _stop_stage_worker(self) -> None:
+        """Stop the stage. Runs off the GUI thread — only signals may cross back."""
+        self.microscope.stage.stop()
+
+    def _on_stop_errored(self, error: object) -> None:
+        notification_service.show_toast(f"Could not stop the stage: {error}", "error")
 
     def get_position_from_ui(self) -> FibsemStagePosition:
         """Get the stage position from the UI"""
@@ -570,6 +623,7 @@ class StageControlWidget(QWidget):
         )
         worker = self._stage_move_worker(beam_type, point, vertical_move)
         worker.returned.connect(self._on_stage_move_returned)
+        worker.errored.connect(self._on_stage_move_errored)
         worker.finished.connect(self.move_stage_finished)
         worker.start(control=control_of(self.microscope), action="move stage")
 
@@ -663,6 +717,7 @@ class StageControlWidget(QWidget):
         # "Moving to the SEM orientation…" while the move had finished and the images
         # were being retaken. Both paths now share the one slot that says it.
         worker.returned.connect(self._on_stage_move_returned)
+        worker.errored.connect(self._on_stage_move_errored)
         worker.finished.connect(self.move_stage_finished)
         worker.start(
             control=control_of(self.microscope), action="move stage to orientation"
@@ -709,6 +764,7 @@ class StageControlWidget(QWidget):
         self._report_move(f"Moving to {where}…")
         worker = self.move_to_device_worker(device, orientation)
         worker.returned.connect(self._on_stage_move_returned)
+        worker.errored.connect(self._on_stage_move_errored)
         worker.finished.connect(self.move_stage_finished)
         worker.start(control=control_of(self.microscope), action="move stage to device")
 

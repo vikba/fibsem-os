@@ -334,14 +334,13 @@ class AutoLamellaWindow(AppWindow):
         container = add_microscope_tab(
             self.tab_widget, self.view_controller, self.panel
         )
-        # The F5/Esc (View) and F2/F6/F9/F11 (Imaging) shortcuts are defined on QActions —
+        # The F5 (View) and F2/F6/F9/F11 (Imaging) shortcuts are defined on QActions —
         # one source of truth for the menu item and its keybinding. Adding those actions to
         # the Microscope-tab container makes their WidgetWithChildrenShortcut scope resolve
         # against this tab, so the keys only fire when focus is inside it (not the
         # overview, editor or workflow tabs).
         for action in (
             self.menu_bar.action_toggle_fullscreen,
-            self.menu_bar.action_exit_fullscreen,
             *self.menu_bar.imaging_actions,
         ):
             container.addAction(action)

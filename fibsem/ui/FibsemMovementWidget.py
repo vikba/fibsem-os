@@ -141,6 +141,10 @@ class FibsemMovementWidget(QtWidgets.QWidget):
         """Move the stage. ``None`` means the position typed into the form."""
         self.control_widget.move_to_position(stage_position)
 
+    def stop_stage(self) -> None:
+        """Halt the stage move in progress, whoever started it."""
+        self.control_widget.stop_stage()
+
     def update_ui(self, stage_position: Optional[FibsemStagePosition] = None) -> None:
         """Show *stage_position*, or read the stage when it is None."""
         self.control_widget.update_ui(stage_position)
