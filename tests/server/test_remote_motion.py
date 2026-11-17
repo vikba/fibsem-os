@@ -4,12 +4,14 @@ it stands for: moves, pumping and venting run on the far side, and what the devi
 says about itself beyond its parameters (its facts) comes across with it."""
 
 import math
+import threading
 
 import pytest
 import yaml
 
 import fibsem.config as cfg
 from fibsem import utils
+from fibsem.cancellation import OperationCancelledError
 from fibsem.codec import encode
 from fibsem.devices.core import ParameterMetadata
 from fibsem.devices.entries import (
@@ -19,6 +21,7 @@ from fibsem.devices.entries import (
 )
 from fibsem.devices.manipulator import Manipulator
 from fibsem.devices.stage import UNLIMITED, StageLimitError
+from fibsem.drivers.demo.devices import DemoStage
 from fibsem.drivers.remote.devices import (
     DeviceClient,
     RemoteChamber,
@@ -121,6 +124,45 @@ def test_a_remote_stage_moves_on_the_server(served):
     moved = remote["stage"].move_relative(FibsemStagePosition(x=1e-3))
     assert moved.x == pytest.approx(2e-3)
     assert remote["stage"].position.cached.x == pytest.approx(2e-3)
+
+
+def test_a_remote_stage_stops_a_move_on_the_server(served, monkeypatch):
+    from fibsem.drivers.demo import simulator
+
+    local, remote = served
+    assert remote["stage"].commands["stop"].available
+    start = local["stage"].position.get_value().x
+    monkeypatch.setenv("FIBSEM_SIM_NO_DELAY", "0")
+    monkeypatch.setattr(simulator, "STAGE_MOVEMENT_SLEEP_TIME", 60.0)
+    raised = []
+
+    def move():
+        try:
+            remote["stage"].move_absolute(FibsemStagePosition(x=start + 1e-3))
+        except BaseException as error:  # noqa: BLE001 - the test reads it
+            raised.append(error)
+
+    thread = threading.Thread(target=move)
+    thread.start()
+    assert local["stage"].sim_moving.wait(10), "the move never started"
+    remote["stage"].stop()
+    thread.join(10)
+    assert not thread.is_alive(), "the stopped move never returned"
+    assert isinstance(raised[0], OperationCancelledError)
+    assert local["stage"].position.get_value().x < start + 1e-3
+
+
+def test_a_stage_that_cannot_stop_says_so_across_the_wire(monkeypatch):
+    monkeypatch.setattr(DemoStage, "can_stop", lambda self: False)
+    server = DeviceServer(demo_devices(["stage"])).start()
+    client = DeviceClient("127.0.0.1", server.port, heartbeat=0.5)
+    try:
+        stage = RemoteStage(client=client)
+        stage.connect(client.describe()["stage"])
+        assert not stage.commands["stop"].available
+    finally:
+        client.close()
+        server.stop()
 
 
 def test_a_remote_stage_refuses_a_move_outside_the_limits(served):

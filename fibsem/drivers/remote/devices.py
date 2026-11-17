@@ -708,6 +708,16 @@ class RemoteStage(RemoteDevice, Stage):
     _shuttle = False
     _mirrors = False
     _devices_at_pose: Dict[str, Optional[str]] = {}
+    _server_stops = False
+
+    def _bind_from(self, description: Dict[str, Any]) -> None:
+        stop = description.get("commands", {}).get("stop") or {}
+        self._server_stops = bool(stop.get("available"))
+        super()._bind_from(description)
+
+    def can_stop(self) -> bool:
+        """Whether the server's stage can halt a move."""
+        return self._server_stops
 
     def _apply_facts(self, facts: Dict[str, Any]) -> None:
         self.frame = facts.get("frame", self.frame)
@@ -758,6 +768,9 @@ class RemoteStage(RemoteDevice, Stage):
 
     def _link(self) -> None:
         self.call_command("link")
+
+    def _stop(self) -> None:
+        self.call_command("stop")
 
 
 class RemoteChamber(RemoteDevice, Chamber):

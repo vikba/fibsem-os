@@ -13,7 +13,9 @@ signal. ``stage.axes.t`` is a view of one axis of it, with its unit and limits a
 driver's to say: they are the keys of the per-axis limits in ``position``'s metadata.
 
 Changing where the stage is takes time and can fail, so it is a command, not an
-assignment: ``move_absolute``, ``move_relative``, ``home`` and ``link``. A move
+assignment: ``move_absolute``, ``move_relative``, ``home`` and ``link``. ``stop``
+halts a move from another thread, and the move it halts raises
+``OperationCancelledError`` once it has read where the stage ended. A move
 outside the axis limits is refused, never clipped, for the same reason
 ``raise_if_outside_stage_limits`` refuses a tile grid: a stage that stopped
 somewhere else than asked is a position everything downstream takes for the truth.
@@ -21,7 +23,8 @@ somewhere else than asked is a position everything downstream takes for the trut
 A backend implements the parameters with ``read_<name>``/``metadata_<name>`` methods,
 as for a beam, and the commands with four hooks: ``_move_absolute``,
 ``_move_relative``, ``_home`` and ``_link``. The base class does the rest once: the
-limit check, the ``stage`` resource, the read-back, and the change signals.
+limit check, the ``stage`` resource, the read-back, and the change signals. A backend
+that can halt a move implements ``_stop``, which makes its blocked move hook return.
 
 The stage also declares its poses: the rotation and tilt that each
 orientation name (SEM, FIB, and FM where the stage reaches it by re-posing) means on
@@ -34,9 +37,11 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Mapping, Optional
 
+from fibsem.cancellation import OperationCancelledError
 from fibsem.devices.core import (
     AXIS_UNITS,
     UNLIMITED,  # noqa: F401  (re-exported: drivers import it from here)
@@ -161,6 +166,7 @@ class Stage(Device):
     def __init__(self, parent: Any = None, **kwargs: Any):
         super().__init__(name="stage", parent=parent, **kwargs)
         self.axes = Axes({})
+        self._stop_requested = threading.Event()
 
     def connect(self) -> Stage:
         """Bind the parameters, then build an axis for each one the driver reports."""
@@ -203,8 +209,9 @@ class Stage(Device):
         with recording_move(self.session, self, "move_absolute", position=position):
             self.check_limits(position)
             with self.resources.claim(STAGE_RESOURCE):
+                self._stop_requested.clear()
                 self._move_absolute(position)
-                return self.position.get_value()
+                return self._where_it_ended()
 
     @command
     def move_relative(self, delta: FibsemStagePosition) -> FibsemStagePosition:
@@ -212,8 +219,33 @@ class Stage(Device):
         with recording_move(self.session, self, "move_relative", position=delta):
             with self.resources.claim(STAGE_RESOURCE):
                 self.check_limits(self.position.get_value() + delta)
+                self._stop_requested.clear()
                 self._move_relative(delta)
-                return self.position.get_value()
+                return self._where_it_ended()
+
+    @command(available=lambda stage: stage.can_stop())
+    def stop(self) -> None:
+        """Halt the move in progress. The halted move raises
+        ``OperationCancelledError`` once it has read where the stage ended.
+
+        It does not claim the stage: the move it halts holds that claim. With
+        nothing moving it changes nothing, and the next move runs as usual.
+        """
+        if self.can_stop():
+            self._stop_requested.set()
+        self._stop()
+
+    def can_stop(self) -> bool:
+        """Whether this stage's driver can halt a move."""
+        return type(self)._stop is not Stage._stop
+
+    def _where_it_ended(self) -> FibsemStagePosition:
+        """The position read back after a move, which publishes it; raises if the
+        move was halted, so its caller does not go on as if it had arrived."""
+        position = self.position.get_value()
+        if self._stop_requested.is_set():
+            raise OperationCancelledError(f"{self.name}: the move was stopped.")
+        return position
 
     @command(available=lambda stage: "homed" in stage.parameters)
     def home(self) -> bool:
@@ -311,6 +343,9 @@ class Stage(Device):
 
     def _link(self) -> None:
         raise NotImplementedError
+
+    def _stop(self) -> None:
+        raise NotImplementedError(f"{type(self).__name__} cannot stop the stage.")
 
 
 @contextmanager

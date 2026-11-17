@@ -410,6 +410,9 @@ class DemoStage(Stage):
         )
         if self.sim_error is not None:
             self.sim_error.start_at(self.sim_position)
+        self._stop_event = threading.Event()
+        self.sim_moving = threading.Event()
+        """Set while a move is taking its time, for tests to stop one in flight."""
 
     # -- position ----------------------------------------------------------------
 
@@ -472,25 +475,41 @@ class DemoStage(Stage):
     # -- commands ---------------------------------------------------------------------
 
     def _move_absolute(self, position: FibsemStagePosition) -> None:
-        from fibsem.drivers.demo.simulator import STAGE_MOVEMENT_SLEEP_TIME
-
-        sim_sleep(STAGE_MOVEMENT_SLEEP_TIME)
-        before = deepcopy(self.sim_position)
-        for axis in ("x", "y", "z", "r", "t"):
-            value = getattr(position, axis)
-            if value is not None:
-                setattr(self.sim_position, axis, value)
-        self._moved(before)
+        self._travel(position)
         logging.debug({"msg": "move_stage_absolute", "position": position.to_dict()})
 
     def _move_relative(self, delta: FibsemStagePosition) -> None:
+        self._travel(self.sim_position + delta)
+        logging.debug({"msg": "move_stage_relative", "position": delta.to_dict()})
+
+    def _travel(self, target: FibsemStagePosition) -> None:
+        """Go to *target* over the simulated move time (`sim_sleep`'s rule: none
+        under the tests). A stop leaves each axis the part of the way it had gone."""
         from fibsem.drivers.demo.simulator import STAGE_MOVEMENT_SLEEP_TIME
 
-        sim_sleep(STAGE_MOVEMENT_SLEEP_TIME)
         before = deepcopy(self.sim_position)
-        self.sim_position += delta
+        self._stop_event.clear()
+        travelled = 1.0
+        if STAGE_MOVEMENT_SLEEP_TIME > 0 and not sim_delays_off():
+            started = time.monotonic()
+            self.sim_moving.set()
+            try:
+                if self._stop_event.wait(STAGE_MOVEMENT_SLEEP_TIME):
+                    elapsed = time.monotonic() - started
+                    travelled = min(1.0, elapsed / STAGE_MOVEMENT_SLEEP_TIME)
+            finally:
+                self.sim_moving.clear()
+        for axis in ("x", "y", "z", "r", "t"):
+            end, start = getattr(target, axis), getattr(before, axis)
+            if end is None:
+                continue
+            if travelled < 1.0 and start is not None:
+                end = start + travelled * (end - start)
+            setattr(self.sim_position, axis, end)
         self._moved(before)
-        logging.debug({"msg": "move_stage_relative", "position": delta.to_dict()})
+
+    def _stop(self) -> None:
+        self._stop_event.set()
 
     def _moved(self, before: FibsemStagePosition) -> None:
         if self.sim_error is None:

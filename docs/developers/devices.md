@@ -279,6 +279,13 @@ for workflow code: it handles the order of the axes and the stage's poses, which
 device's moves do not. It and the view-corrected moves are the stage movement
 service's (see [Stage movement](#stage-movement)).
 
+`stage.stop()` halts a move from another thread. It does not wait for the move and
+returns nothing: the halted `move_absolute` or `move_relative` reads where the stage
+ended, then raises `OperationCancelledError`, so its caller does not carry on as if it
+had arrived. A stop with nothing moving leaves the next move alone. A driver makes it
+available by implementing `_stop`; without one, `stage.commands["stop"].available` is
+False and the call raises `NotImplementedError`.
+
 `stage.position.changed` fires after every move. Each axis has its own `changed`,
 which fires only when that axis moved.
 

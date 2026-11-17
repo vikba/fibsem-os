@@ -159,6 +159,7 @@ def test_home_and_link_are_commands_that_report_the_result(stage):
         "link",
         "move_absolute",
         "move_relative",
+        "stop",
     }
     assert set(stage.queries) == {"pose_table"}
     assert (
